@@ -12,6 +12,8 @@ function loadUser() {
 function AnimeMistOverlay() {
   const [panel, setPanel] = useState(null);
   const [user, setUser] = useState(loadUser);
+  const [authTab, setAuthTab] = useState('login');
+  const [upgradeMsg, setUpgradeMsg] = useState('');
 
   useEffect(() => {
     const token = localStorage.getItem('am_token');
@@ -27,18 +29,35 @@ function AnimeMistOverlay() {
 
   const close = useCallback(() => setPanel(null), []);
   const login = useCallback((u) => { setUser(u); localStorage.setItem('am_user', JSON.stringify(u)); }, []);
-  const logout = useCallback(() => { setUser(null); setPanel(null); }, []);
+  const logout = useCallback(() => { setUser(null); setPanel(null); localStorage.removeItem('am_lang'); }, []);
 
   useEffect(() => {
     window.__amOpenPanel = (p) => setPanel(p);
     window.__amUser = user;
-    return () => { window.__amOpenPanel = null; };
+    window.__amSetAuthTab = (tab) => setAuthTab(tab);
+    window.__amShowUpgradeMsg = (msg) => {
+      setUpgradeMsg(msg);
+      setPanel('membership');
+      setTimeout(() => setUpgradeMsg(''), 7000);
+    };
+    return () => {
+      window.__amOpenPanel = null;
+      window.__amSetAuthTab = null;
+      window.__amShowUpgradeMsg = null;
+    };
   }, [user]);
 
   return (
     <>
       {panel === 'membership' && (
-        <MembershipPage user={user} onClose={close} onLogin={login} onLogout={logout} />
+        <MembershipPage
+          user={user}
+          onClose={close}
+          onLogin={login}
+          onLogout={logout}
+          defaultAuthTab={authTab}
+          upgradeMsg={upgradeMsg}
+        />
       )}
       {panel === 'admin' && (
         <AdminPanel user={user} onClose={close} />
