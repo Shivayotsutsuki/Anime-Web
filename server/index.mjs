@@ -241,7 +241,50 @@ app.get("/api/search", (req, res) => {
 app.get("/api/info", (req, res) => {
   const id = req.query.id || "";
   scraper.getInfo(id)
-    .then((d) => respond(res, d))
+    .then((d) => {
+      const info = d.anime?.info || {};
+      const moreInfo = d.anime?.moreInfo || {};
+      const eps = info.stats?.episodes || {};
+      const tvInfo = {
+        sub: eps.sub || 0,
+        dub: eps.dub || 0,
+        showType: info.stats?.type || "TV",
+        duration: info.stats?.duration || "?",
+        quality: info.stats?.quality || "HD",
+        rating: info.stats?.rating || "",
+        releaseDate: (moreInfo.aired || "").match(/\d{4}/)?.[0] || "",
+        episodeInfo: eps,
+      };
+      const animeInfoNested = {
+        id: info.id,
+        data_id: info.id,
+        title: info.name,
+        name: info.name,
+        poster: info.poster,
+        description: info.description,
+        Overview: info.description || "",
+        Genres: moreInfo.genres || [],
+        adultContent: false,
+        japanese_title: moreInfo.japanese || info.name,
+        stats: info.stats,
+        tvInfo,
+        moreInfo,
+      };
+      const data = {
+        ...animeInfoNested,
+        animeInfo: animeInfoNested,
+        promotionalVideos: info.promotionalVideos || [],
+        charactersVoiceActors: info.charactersVoiceActors || [],
+        recommended_data: d.recommendedAnimes || [],
+      };
+      respond(res, {
+        data,
+        seasons: d.seasons || [],
+        relatedAnimes: d.relatedAnimes || [],
+        recommendedAnimes: d.recommendedAnimes || [],
+        mostPopularAnimes: d.mostPopularAnimes || [],
+      });
+    })
     .catch((err) => fail(res, err));
 });
 
@@ -251,6 +294,7 @@ app.get("/api/episodes/:animeId", (req, res) =>
       const episodes = (d.episodes || d || []).map((ep) => ({
         id: ep.episodeId || ep.id,
         number: ep.number,
+        episode_no: ep.number,
         title: ep.title,
         isFiller: ep.isFiller,
       }));
@@ -283,34 +327,58 @@ function toStreamingLink(d) {
   };
 }
 
-app.get("/api/servers/:animeId", (req, res) => {
+app.get("/api/servers/:animeId", async (req, res) => {
   const ep = req.query.ep;
-  const animeEpisodeId = ep ? `${req.params.animeId}?ep=${ep}` : req.params.animeId;
-  scraper.getEpisodeServers(animeEpisodeId)
-    .then((d) => {
-      const SERVER_ORDER = { "HD-1": 0, "HD-2": 1, "HD-3": 2, "HD-4": 3 };
-      const flat = [];
-      const addServers = (list, type) => {
-        (list || []).forEach((s, i) => {
-          const mappedName = SERVER_NAME_MAP[s.serverName] || s.serverName.toUpperCase();
-          flat.push({
-            type,
-            serverName: mappedName,
-            data_id: `${type}_${s.serverId}_${i}`,
-            server_id: String(s.serverId),
-          });
-        });
-      };
-      addServers(d.sub, "sub");
-      addServers(d.dub, "dub");
-      flat.sort((a, b) => {
-        const typeOrder = a.type === b.type ? 0 : (a.type === "sub" ? -1 : 1);
-        const nameOrder = (SERVER_ORDER[a.serverName] ?? 99) - (SERVER_ORDER[b.serverName] ?? 99);
-        return typeOrder || nameOrder;
-      });
-      respond(res, flat);
-    })
-    .catch((err) => fail(res, err));
+  if (!ep) return fail(res, "ep query param required");
+
+  const SNAME_MAP = {
+    "megacloud": "HD-1",
+    "hd-1":      "HD-1",
+    "vidsrc":    "HD-2",
+    "hd-2":      "HD-2",
+    "t-cloud":   "HD-3",
+    "hd-3":      "HD-3",
+  };
+  const SERVER_ORDER = { "HD-1": 0, "HD-2": 1, "HD-3": 2, "HD-4": 3 };
+  const TYPE_ORDER   = { "sub": 0, "dub": 1, "hin": 2, "raw": 3 };
+
+  try {
+    const referer = `${HIANIME_BASE}/watch/${req.params.animeId}?ep=${ep}`;
+    const html_resp = await axios.get(`${HIANIME_AJAX}/episode/servers?episodeId=${ep}`, {
+      headers: {
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": referer,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+      },
+    });
+    const html = html_resp.data?.html || "";
+
+    const flat = [];
+    const seen = new Set();
+    for (const m of html.matchAll(/data-type="([^"]+)"[^>]*data-id="([^"]+)"[^>]*data-server-id="([^"]+)"/g)) {
+      const [, rawType, dataId, serverId] = m;
+      const rawTypeLower = rawType.toLowerCase();
+      const type = rawTypeLower === "hin" ? "raw" : rawTypeLower;
+      if (!["sub", "dub", "raw"].includes(type)) continue;
+      const btnMatch = html.slice(html.indexOf(`data-id="${dataId}"`)).match(/<a[^>]*>([^<]+)<\/a>/);
+      const rawName = (btnMatch?.[1] || "").trim().toLowerCase();
+      const serverName = SNAME_MAP[rawName] || SNAME_MAP[rawTypeLower] || "HD-" + serverId;
+      const key = `${type}_${serverName}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      flat.push({ type, serverName, data_id: dataId, server_id: serverId });
+    }
+
+    flat.sort((a, b) => {
+      const t = (TYPE_ORDER[a.type] ?? 99) - (TYPE_ORDER[b.type] ?? 99);
+      if (t !== 0) return t;
+      return (SERVER_ORDER[a.serverName] ?? 99) - (SERVER_ORDER[b.serverName] ?? 99);
+    });
+
+    respond(res, flat);
+  } catch (err) {
+    fail(res, err);
+  }
 });
 
 const HIANIME_BASE = `https://${process.env.ANIWATCH_DOMAIN || "aniwatchtv.to"}`;

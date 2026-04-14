@@ -37,9 +37,9 @@ This project is a patched and rebranded version of a reverse-engineered anime st
 ### Anime Data (aniwatch scraper)
 - `GET /api` → home page data
 - `GET /api/search?keyword={q}&page={p}` → search results
-- `GET /api/info?id={id}` → anime info
-- `GET /api/episodes/{animeId}` → episode list
-- `GET /api/servers/{animeId}?ep={epId}` → streaming servers
+- `GET /api/info?id={id}` → anime info — returns `{ results: { data: { id, data_id, title, poster, japanese_title, tvInfo, animeInfo:{tvInfo,...}, Genres, Overview, recommended_data, ... }, seasons, relatedAnimes, recommendedAnimes } }`
+- `GET /api/episodes/{animeId}` → episode list — returns `{ results: { episodes: [{id, number, episode_no, title, isFiller}], totalEpisodes } }`
+- `GET /api/servers/{animeId}?ep={epId}` → streaming servers — returns `{ results: [{type, serverName, data_id, server_id}] }` with real HiAnime data-ids. Includes `hin` (Hindi) servers mapped as `type:"raw"`. Sorted sub→dub→raw, HD-1→HD-2→HD-3.
 - `GET /api/stream?id={episodeId}&server={s}&type={t}` → streaming sources
 - `GET /api/schedule?date={date}` → release calendar
 - And more category/genre/producer endpoints
