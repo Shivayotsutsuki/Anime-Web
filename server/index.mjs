@@ -274,12 +274,22 @@ app.get("/api/info", (req, res) => {
         ...animeInfoNested,
         animeInfo: animeInfoNested,
         promotionalVideos: info.promotionalVideos || [],
-        charactersVoiceActors: info.charactersVoiceActors || [],
+        charactersVoiceActors: (info.charactersVoiceActors || []).map(cva => ({
+          character: cva.character,
+          voiceActors: cva.voiceActor ? [cva.voiceActor] : (cva.voiceActors || []),
+        })),
         recommended_data: d.recommendedAnimes || [],
       };
+      const seasons = (d.seasons || []).map(s => ({
+        id: s.id,
+        season: s.title,
+        season_poster: s.poster,
+        name: s.name,
+        isCurrent: s.isCurrent,
+      }));
       respond(res, {
         data,
-        seasons: d.seasons || [],
+        seasons,
         relatedAnimes: d.relatedAnimes || [],
         recommendedAnimes: d.recommendedAnimes || [],
         mostPopularAnimes: d.mostPopularAnimes || [],
