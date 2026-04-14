@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "id": "538b45a2-d7c6-4612-b15a-e41765edd34e",
+    "username": "shivay",
+    "email": "shivay0086@gmail.com",
+    "passwordHash": "8048fdf6797b8a8f34377cce12b7f483c980b74ad102e457cfc75c20b4457ea6",
+    "membership": "vip",
+    "role": "admin",
+    "createdAt": "2026-04-14T07:08:23.731Z",
+    "tokens": [
+      "9046f49a32691b604fc75ce10eab62970b8ddb1e952854dbae195a83a071e144"
+    ]
+  }
+]

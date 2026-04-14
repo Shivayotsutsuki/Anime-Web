@@ -227,7 +227,13 @@ app.get("/api/search", (req, res) => {
   const q = req.query.keyword || req.query.q || "";
   const page = parseInt(req.query.page) || 1;
   scraper.search(q, page)
-    .then((d) => respond(res, d))
+    .then((d) => respond(res, {
+      data: d.animes || [],
+      totalPages: d.totalPages || 1,
+      hasNextPage: d.hasNextPage || false,
+      currentPage: d.currentPage || 1,
+      mostPopularAnimes: d.mostPopularAnimes || [],
+    }))
     .catch((err) => fail(res, err));
 });
 
@@ -303,21 +309,40 @@ app.get("/api/character/list/:animeId", (req, res) =>
 app.get("/api/producer/:producerId", (req, res) => {
   const page = parseInt(req.query.page) || 1;
   scraper.getProducerAnimes(req.params.producerId, page)
-    .then((d) => respond(res, d))
+    .then((d) => respond(res, {
+      data: d.animes || [],
+      totalPages: d.totalPages || 1,
+      hasNextPage: d.hasNextPage || false,
+      currentPage: d.currentPage || 1,
+      producerName: d.producerName,
+      topAiringAnimes: d.topAiringAnimes || [],
+    }))
     .catch((err) => fail(res, err));
 });
 
 app.get("/api/genre/:genreName", (req, res) => {
   const page = parseInt(req.query.page) || 1;
   scraper.getGenreAnime(req.params.genreName, page)
-    .then((d) => respond(res, d))
+    .then((d) => respond(res, {
+      data: d.animes || [],
+      totalPages: d.totalPages || 1,
+      hasNextPage: d.hasNextPage || false,
+      currentPage: d.currentPage || 1,
+      genreName: d.genreName,
+      topAiringAnimes: d.topAiringAnimes || [],
+    }))
     .catch((err) => fail(res, err));
 });
 
 app.get("/api/az-list/:letter", (req, res) => {
   const page = parseInt(req.query.page) || 1;
   scraper.getAZList(req.params.letter, page)
-    .then((d) => respond(res, d))
+    .then((d) => respond(res, {
+      data: d.animes || [],
+      totalPages: d.totalPages || 1,
+      hasNextPage: d.hasNextPage || false,
+      currentPage: d.currentPage || 1,
+    }))
     .catch((err) => fail(res, err));
 });
 
@@ -325,7 +350,13 @@ app.get("/api/:category", (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const category = req.params.category;
   scraper.getCategoryAnime(category, page)
-    .then((d) => respond(res, d))
+    .then((d) => respond(res, {
+      data: d.animes || [],
+      totalPages: d.totalPages || 1,
+      hasNextPage: d.hasNextPage || false,
+      currentPage: d.currentPage || 1,
+      category: d.category,
+    }))
     .catch((err) => fail(res, err));
 });
 
