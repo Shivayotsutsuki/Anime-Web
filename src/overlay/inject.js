@@ -10,42 +10,25 @@ function injectHindiOption() {
   const langSwitcher = document.querySelector('.language-switcher');
   if (!langSwitcher || langSwitcher.querySelector('.am-hi-btn')) return;
 
-  const user = window.__amUser;
-  const isPremium = user && (user.membership === 'premium' || user.membership === 'vip');
   const isHindiActive = localStorage.getItem('am_lang') === 'HI';
 
   const hiBtn = document.createElement('button');
-  hiBtn.className = `lang-button am-hi-btn ${isPremium && isHindiActive ? 'active' : ''}`;
-  hiBtn.title = isPremium ? 'Hindi (Premium)' : 'Hindi — Premium only';
-
-  if (!isPremium) {
-    hiBtn.innerHTML = 'HI <span style="font-size:9px;vertical-align:super">🔒</span>';
-    hiBtn.style.opacity = '0.55';
-    hiBtn.style.cursor = 'pointer';
-    hiBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      document.querySelector('.close-button')?.click();
-      setTimeout(() => {
-        window.__amOpenPanel?.('membership');
-        window.__amShowUpgradeMsg?.('Hindi audio is available for Premium and VIP members. Upgrade to unlock it!');
-      }, 200);
-    });
-  } else {
-    hiBtn.textContent = 'HI';
-    hiBtn.style.cursor = 'pointer';
-    hiBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const currentLang = localStorage.getItem('am_lang');
-      if (currentLang === 'HI') {
-        localStorage.removeItem('am_lang');
-        hiBtn.classList.remove('active');
-      } else {
-        localStorage.setItem('am_lang', 'HI');
-        document.querySelectorAll('.lang-button').forEach(b => b.classList.remove('active'));
-        hiBtn.classList.add('active');
-      }
-    });
-  }
+  hiBtn.className = `lang-button am-hi-btn ${isHindiActive ? 'active' : ''}`;
+  hiBtn.title = 'Hindi';
+  hiBtn.textContent = 'HI';
+  hiBtn.style.cursor = 'pointer';
+  hiBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const currentLang = localStorage.getItem('am_lang');
+    if (currentLang === 'HI') {
+      localStorage.removeItem('am_lang');
+      hiBtn.classList.remove('active');
+    } else {
+      localStorage.setItem('am_lang', 'HI');
+      document.querySelectorAll('.lang-button').forEach(b => b.classList.remove('active'));
+      hiBtn.classList.add('active');
+    }
+  });
 
   langSwitcher.appendChild(hiBtn);
 

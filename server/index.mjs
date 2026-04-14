@@ -4,6 +4,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { HiAnime } from "aniwatch";
+import axios from "axios";
 
 const app = express();
 const PORT = 3001;
@@ -246,25 +247,151 @@ app.get("/api/info", (req, res) => {
 
 app.get("/api/episodes/:animeId", (req, res) =>
   scraper.getEpisodes(req.params.animeId)
-    .then((d) => respond(res, d.episodes || d))
+    .then((d) => {
+      const episodes = (d.episodes || d || []).map((ep) => ({
+        id: ep.episodeId || ep.id,
+        number: ep.number,
+        title: ep.title,
+        isFiller: ep.isFiller,
+      }));
+      respond(res, { episodes, totalEpisodes: d.totalEpisodes || episodes.length });
+    })
     .catch((err) => fail(res, err))
 );
+
+const SERVER_NAME_MAP = {
+  "megacloud": "HD-1",
+  "vidsrc":    "HD-2",
+  "hd-1":      "HD-2",
+  "hd-2":      "HD-3",
+  "t-cloud":   "HD-3",
+};
+const ANIWATCH_SERVER_MAP = {
+  "hd-1": ["megacloud", "hd-1", "hd-2"],
+  "hd-2": ["hd-1", "hd-2", "megacloud"],
+  "hd-3": ["hd-2", "megacloud", "hd-1"],
+};
+
+function toStreamingLink(d) {
+  if (!d || !d.sources?.length) return null;
+  return {
+    link: { file: d.sources[0].url },
+    iframe: null,
+    intro: d.intro || null,
+    outro: d.outro || null,
+    tracks: (d.tracks || []).map(t => ({ file: t.file, label: t.label, kind: t.kind, default: t.default })),
+  };
+}
 
 app.get("/api/servers/:animeId", (req, res) => {
   const ep = req.query.ep;
   const animeEpisodeId = ep ? `${req.params.animeId}?ep=${ep}` : req.params.animeId;
   scraper.getEpisodeServers(animeEpisodeId)
-    .then((d) => respond(res, d))
+    .then((d) => {
+      const SERVER_ORDER = { "HD-1": 0, "HD-2": 1, "HD-3": 2, "HD-4": 3 };
+      const flat = [];
+      const addServers = (list, type) => {
+        (list || []).forEach((s, i) => {
+          const mappedName = SERVER_NAME_MAP[s.serverName] || s.serverName.toUpperCase();
+          flat.push({
+            type,
+            serverName: mappedName,
+            data_id: `${type}_${s.serverId}_${i}`,
+            server_id: String(s.serverId),
+          });
+        });
+      };
+      addServers(d.sub, "sub");
+      addServers(d.dub, "dub");
+      flat.sort((a, b) => {
+        const typeOrder = a.type === b.type ? 0 : (a.type === "sub" ? -1 : 1);
+        const nameOrder = (SERVER_ORDER[a.serverName] ?? 99) - (SERVER_ORDER[b.serverName] ?? 99);
+        return typeOrder || nameOrder;
+      });
+      respond(res, flat);
+    })
     .catch((err) => fail(res, err));
 });
 
-app.get("/api/stream", (req, res) => {
-  const rawId = req.query.id || "";
-  const server = req.query.server || "hd-1";
+const HIANIME_BASE = `https://${process.env.ANIWATCH_DOMAIN || "aniwatchtv.to"}`;
+const HIANIME_AJAX = `${HIANIME_BASE}/ajax/v2`;
+const HIANIME_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+  "X-Requested-With": "XMLHttpRequest",
+};
+
+const SERVER_DATA_ID_MAP = {
+  "hd-1": 1,
+  "hd-2": 4,
+  "hd-3": 1,
+};
+
+async function getEmbedUrl(episodeNumericId, serverDataId, referer) {
+  const resp = await axios.get(`${HIANIME_AJAX}/episode/servers?episodeId=${episodeNumericId}`, {
+    headers: { ...HIANIME_HEADERS, Referer: referer },
+  });
+  const html = resp.data?.html || "";
+  const regex = new RegExp(`data-id="([^"]+)"[^>]*data-server-id="${serverDataId}"`, "i");
+  const match = html.match(regex);
+  if (!match) {
+    const anyMatch = html.match(/data-id="([^"]+)"/);
+    if (!anyMatch) throw new Error("No server found");
+    return anyMatch[1];
+  }
+  return match[1];
+}
+
+async function getEmbedLink(dataId, referer) {
+  const resp = await axios.get(`${HIANIME_AJAX}/episode/sources?id=${dataId}`, {
+    headers: { ...HIANIME_HEADERS, Referer: referer },
+  });
+  return resp.data?.link || null;
+}
+
+app.get("/api/stream", async (req, res) => {
+  const id = req.query.id || "";
+  const ep = req.query.ep || "";
+  const fullId = ep ? `${id}?ep=${ep}` : id;
+  const server = (req.query.server || "hd-1").toLowerCase();
   const type = req.query.type || "sub";
-  scraper.getEpisodeSources(rawId, server, type)
-    .then((d) => respond(res, d))
-    .catch((err) => fail(res, err));
+
+  const epNumericId = ep || fullId.split("?ep=")[1];
+  const referer = `${HIANIME_BASE}/watch/${fullId}`;
+  const serverDataId = SERVER_DATA_ID_MAP[server] || 4;
+
+  try {
+    const tryServers = ANIWATCH_SERVER_MAP[server] || ["megacloud", "hd-1", "hd-2"];
+    for (const srv of tryServers) {
+      try {
+        const d = await scraper.getEpisodeSources(fullId, srv, type);
+        if (d?.sources?.length) {
+          return res.json({ results: { streamingLink: toStreamingLink(d) } });
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+
+  try {
+    const dataId = await getEmbedUrl(epNumericId, serverDataId, referer);
+    const embedLink = await getEmbedLink(dataId, referer);
+    if (embedLink) {
+      return res.json({
+        results: {
+          streamingLink: {
+            link: null,
+            iframe: embedLink,
+            intro: null,
+            outro: null,
+            tracks: [],
+          },
+        },
+      });
+    }
+  } catch (e) {
+    console.error("embed fallback error:", e.message);
+  }
+
+  return res.json({ results: null, error: "No stream found. Try a different server." });
 });
 
 app.get("/api/schedule", (req, res) => {
