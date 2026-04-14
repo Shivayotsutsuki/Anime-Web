@@ -268,6 +268,7 @@ app.get("/api/schedule", (req, res) => {
       const animes = (d.scheduledAnimes || []).map((a) => ({
         id: a.id,
         name: a.name,
+        title: a.name,
         jname: a.jname,
         time: a.time,
         episode: a.episode,
