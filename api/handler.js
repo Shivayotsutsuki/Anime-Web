@@ -1,0 +1,450 @@
+import express from "express";
+import cors from "cors";
+import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import axios from "axios";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const app = express();
+const JIKAN_BASE = "https://api.jikan.moe/v4";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "animemist@admin";
+
+const BUNDLED_DATA = path.resolve(__dirname, "../data/users.json");
+const TMP_DATA = "/tmp/users.json";
+
+function getDataFile() {
+  if (!fs.existsSync(TMP_DATA)) {
+    try {
+      const seed = fs.existsSync(BUNDLED_DATA)
+        ? fs.readFileSync(BUNDLED_DATA, "utf8")
+        : "[]";
+      fs.writeFileSync(TMP_DATA, seed);
+    } catch {
+      fs.writeFileSync(TMP_DATA, "[]");
+    }
+  }
+  return TMP_DATA;
+}
+
+function loadUsers() {
+  try {
+    return JSON.parse(fs.readFileSync(getDataFile(), "utf8"));
+  } catch {
+    return [];
+  }
+}
+
+function saveUsers(users) {
+  try {
+    fs.writeFileSync(getDataFile(), JSON.stringify(users, null, 2));
+  } catch {}
+}
+
+function hashPassword(p) {
+  return crypto.createHash("sha256").update(p + "animemist-salt").digest("hex");
+}
+
+function generateToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function getUserByToken(token) {
+  return loadUsers().find((u) => u.tokens && u.tokens.includes(token));
+}
+
+function requireAuth(req, res, next) {
+  const token = req.headers["authorization"]?.replace("Bearer ", "");
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+  const user = getUserByToken(token);
+  if (!user) return res.status(401).json({ error: "Invalid token" });
+  req.user = user;
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  const adminKey = req.headers["x-admin-key"] || req.body?.adminKey;
+  if (adminKey === ADMIN_PASSWORD) { req.isAdmin = true; return next(); }
+  const token = req.headers["authorization"]?.replace("Bearer ", "");
+  if (!token) return res.status(403).json({ error: "Admin access required" });
+  const user = getUserByToken(token);
+  if (!user || user.role !== "admin") return res.status(403).json({ error: "Admin access required" });
+  req.user = user;
+  req.isAdmin = true;
+  next();
+}
+
+app.use(cors());
+app.use(express.json());
+
+app.post("/auth/register", (req, res) => {
+  const { username, email, password } = req.body;
+  if (!username || !email || !password) return res.status(400).json({ error: "All fields are required" });
+  if (password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters" });
+  const users = loadUsers();
+  if (users.find((u) => u.email === email)) return res.status(400).json({ error: "Email already registered" });
+  if (users.find((u) => u.username === username)) return res.status(400).json({ error: "Username already taken" });
+  const token = generateToken();
+  const user = {
+    id: crypto.randomUUID(), username, email,
+    passwordHash: hashPassword(password),
+    membership: "free",
+    role: users.length === 0 ? "admin" : "user",
+    createdAt: new Date().toISOString(),
+    tokens: [token],
+  };
+  users.push(user);
+  saveUsers(users);
+  const { passwordHash, tokens, ...safe } = user;
+  res.json({ user: safe, token });
+});
+
+app.post("/auth/login", (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ error: "Email and password required" });
+  const users = loadUsers();
+  const user = users.find((u) => u.email === email);
+  if (!user || user.passwordHash !== hashPassword(password)) return res.status(401).json({ error: "Invalid email or password" });
+  const token = generateToken();
+  user.tokens = [...(user.tokens || []), token].slice(-5);
+  saveUsers(users);
+  const { passwordHash, tokens, ...safe } = user;
+  res.json({ user: safe, token });
+});
+
+app.post("/auth/logout", requireAuth, (req, res) => {
+  const token = req.headers["authorization"]?.replace("Bearer ", "");
+  const users = loadUsers();
+  const user = users.find((u) => u.id === req.user.id);
+  if (user) { user.tokens = (user.tokens || []).filter((t) => t !== token); saveUsers(users); }
+  res.json({ success: true });
+});
+
+app.get("/auth/me", requireAuth, (req, res) => {
+  const { passwordHash, tokens, ...safe } = req.user;
+  res.json({ user: safe });
+});
+
+app.get("/admin/users", requireAdmin, (req, res) => {
+  res.json({ users: loadUsers().map(({ passwordHash, tokens, ...u }) => u) });
+});
+
+app.patch("/admin/users/:id", requireAdmin, (req, res) => {
+  const users = loadUsers();
+  const idx = users.findIndex((u) => u.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: "User not found" });
+  ["membership", "role", "username"].forEach((k) => { if (req.body[k] !== undefined) users[idx][k] = req.body[k]; });
+  saveUsers(users);
+  const { passwordHash, tokens, ...safe } = users[idx];
+  res.json({ user: safe });
+});
+
+app.delete("/admin/users/:id", requireAdmin, (req, res) => {
+  saveUsers(loadUsers().filter((u) => u.id !== req.params.id));
+  res.json({ success: true });
+});
+
+app.get("/admin/stats", requireAdmin, (req, res) => {
+  const users = loadUsers();
+  res.json({
+    total: users.length,
+    free: users.filter((u) => u.membership === "free").length,
+    premium: users.filter((u) => u.membership === "premium").length,
+    vip: users.filter((u) => u.membership === "vip").length,
+    admins: users.filter((u) => u.role === "admin").length,
+  });
+});
+
+const respond = (res, data) => res.json({ results: data });
+const fail = (res, err) => {
+  console.error(err?.message || err);
+  res.status(500).json({ results: null, error: err?.message || "Error" });
+};
+
+async function jikan(p, params = {}) {
+  const url = new URL(`${JIKAN_BASE}${p}`);
+  Object.entries(params).forEach(([k, v]) => { if (v != null) url.searchParams.set(k, v); });
+  const r = await axios.get(url.toString(), { timeout: 15000 });
+  return r.data;
+}
+
+function transformAnime(a) {
+  if (!a) return null;
+  return {
+    id: String(a.mal_id),
+    data_id: String(a.mal_id),
+    title: a.title_english || a.title,
+    name: a.title_english || a.title,
+    poster: a.images?.webp?.large_image_url || a.images?.jpg?.large_image_url || "",
+    description: a.synopsis || "",
+    Overview: a.synopsis || "",
+    Genres: (a.genres || []).map((g) => g.name),
+    adultContent: false,
+    japanese_title: a.title_japanese || a.title,
+    score: a.score,
+    rank: a.rank,
+    popularity: a.popularity,
+    type: a.type,
+    episodes: a.episodes,
+    status: a.status,
+    airing: a.airing,
+    duration: a.duration,
+    rating: a.rating,
+    stats: {
+      episodes: { sub: a.episodes || 0, dub: 0 },
+      type: a.type || "TV",
+      duration: a.duration || "?",
+      quality: "HD",
+      rating: a.score ? String(a.score) : "",
+    },
+    tvInfo: {
+      sub: a.episodes || 0,
+      dub: 0,
+      showType: a.type || "TV",
+      duration: a.duration || "?",
+      quality: "HD",
+      rating: a.score ? String(a.score) : "",
+      releaseDate: a.aired?.prop?.from?.year ? String(a.aired.prop.from.year) : "",
+    },
+    moreInfo: {
+      aired: a.aired?.string || "",
+      genres: (a.genres || []).map((g) => g.name),
+      japanese: a.title_japanese || "",
+      studios: (a.studios || []).map((s) => s.name).join(", "),
+    },
+  };
+}
+
+async function homeData() {
+  const [topAiring, seasonal, topAll] = await Promise.all([
+    jikan("/top/anime", { filter: "airing", limit: 10 }),
+    jikan("/seasons/now", { limit: 15 }),
+    jikan("/top/anime", { limit: 10 }),
+  ]);
+  const airing = (topAiring.data || []).map(transformAnime);
+  const seasonalList = (seasonal.data || []).map(transformAnime);
+  return {
+    spotlights: airing.slice(0, 5),
+    trending: airing.slice(0, 10),
+    topTen: { today: airing.slice(0, 10), week: airing.slice(0, 10), month: airing.slice(0, 10) },
+    today: airing.slice(0, 10),
+    topAiring: airing,
+    mostPopular: (topAll.data || []).map(transformAnime),
+    mostFavorite: (topAll.data || []).map(transformAnime),
+    latestCompleted: seasonalList,
+    latestEpisode: seasonalList,
+    topUpcoming: [],
+    recentlyAdded: seasonalList,
+    genres: ["Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", "Mystery", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller"],
+  };
+}
+
+app.get("/api", async (req, res) => { try { respond(res, await homeData()); } catch (err) { fail(res, err); } });
+app.get("/api/home", async (req, res) => { try { respond(res, await homeData()); } catch (err) { fail(res, err); } });
+
+app.get("/api/random/id", async (req, res) => {
+  try {
+    const d = await jikan("/top/anime", { filter: "airing", limit: 10 });
+    const list = d.data || [];
+    const item = list[Math.floor(Math.random() * list.length)];
+    respond(res, item ? String(item.mal_id) : null);
+  } catch (err) { fail(res, err); }
+});
+
+app.get("/api/search/suggest", async (req, res) => {
+  const q = req.query.keyword || req.query.q || "";
+  try {
+    const d = await jikan("/anime", { q, limit: 8, sfw: true });
+    respond(res, (d.data || []).map((a) => ({
+      id: String(a.mal_id),
+      name: a.title_english || a.title,
+      poster: a.images?.webp?.image_url || a.images?.jpg?.image_url || "",
+      type: a.type,
+    })));
+  } catch (err) { fail(res, err); }
+});
+
+app.get("/api/search", async (req, res) => {
+  const q = req.query.keyword || req.query.q || "";
+  const page = parseInt(req.query.page) || 1;
+  try {
+    const d = await jikan("/anime", { q, page, limit: 20, sfw: true });
+    respond(res, {
+      data: (d.data || []).map(transformAnime),
+      totalPages: d.pagination?.last_visible_page || 1,
+      hasNextPage: d.pagination?.has_next_page || false,
+      currentPage: page,
+      mostPopularAnimes: [],
+    });
+  } catch (err) { fail(res, err); }
+});
+
+app.get("/api/info", async (req, res) => {
+  const id = req.query.id || "";
+  const malId = id.split("-").pop() || id;
+  try {
+    const [infoResp, charsResp] = await Promise.all([
+      jikan(`/anime/${malId}/full`),
+      jikan(`/anime/${malId}/characters`).catch(() => ({ data: [] })),
+    ]);
+    const a = infoResp.data;
+    const data = {
+      ...transformAnime(a),
+      promotionalVideos: a.trailer?.url ? [{ title: "Trailer", source: a.trailer.url }] : [],
+      charactersVoiceActors: (charsResp.data || []).slice(0, 20).map((c) => ({
+        character: { id: c.character?.mal_id, name: c.character?.name, poster: c.character?.images?.webp?.image_url || c.character?.images?.jpg?.image_url || "" },
+        voiceActors: (c.voice_actors || []).slice(0, 2).map((va) => ({ id: va.person?.mal_id, name: va.person?.name, poster: va.person?.images?.jpg?.image_url || "" })),
+      })),
+      recommended_data: [],
+    };
+    const relatedAnimes = (a.relations || []).flatMap((r) =>
+      r.entry.filter((e) => e.type === "anime").map((e) => ({
+        id: String(e.mal_id), name: e.name, title: e.name, relation: r.relation,
+      }))
+    );
+    respond(res, { data, seasons: [], relatedAnimes, recommendedAnimes: [], mostPopularAnimes: [] });
+  } catch (err) { fail(res, err); }
+});
+
+app.get("/api/episodes/:animeId", async (req, res) => {
+  const malId = req.params.animeId.split("-").pop() || req.params.animeId;
+  try {
+    const infoResp = await jikan(`/anime/${malId}`);
+    const totalEpisodes = infoResp.data?.episodes || 0;
+    const episodes = Array.from({ length: Math.min(totalEpisodes, 500) }, (_, i) => ({
+      id: `${malId}?ep=${i + 1}`,
+      number: i + 1,
+      episode_no: i + 1,
+      title: `Episode ${i + 1}`,
+      isFiller: false,
+    }));
+    respond(res, { episodes, totalEpisodes });
+  } catch (err) { fail(res, err); }
+});
+
+app.get("/api/servers/:animeId", async (req, res) => {
+  respond(res, [{ type: "sub", serverName: "HD-1", data_id: req.query.ep || "1", server_id: "1" }]);
+});
+
+app.get("/api/stream", async (req, res) => {
+  res.json({ results: { streamingLink: { link: null, iframe: null, intro: null, outro: null, tracks: [] } } });
+});
+
+app.get("/api/schedule", async (req, res) => {
+  try {
+    const d = await jikan("/schedules", { limit: 25 });
+    respond(res, (d.data || []).map((a) => ({
+      id: String(a.mal_id), name: a.title_english || a.title,
+      title: a.title_english || a.title, jname: a.title_japanese || a.title,
+      time: a.broadcast?.time || "TBA", episode: a.episodes || null,
+      airingTimestamp: null, secondsUntilAiring: null,
+    })));
+  } catch (err) { fail(res, err); }
+});
+
+app.get("/api/schedule/:animeId", async (req, res) => {
+  const malId = req.params.animeId.split("-").pop() || req.params.animeId;
+  try {
+    const d = await jikan(`/anime/${malId}`);
+    respond(res, { broadcast: d.data?.broadcast || null });
+  } catch (err) { fail(res, err); }
+});
+
+app.get("/api/qtip/:animeId", async (req, res) => {
+  const malId = req.params.animeId.split("-").pop() || req.params.animeId;
+  try {
+    const d = await jikan(`/anime/${malId}`);
+    respond(res, transformAnime(d.data));
+  } catch (err) { fail(res, err); }
+});
+
+app.get("/api/character/list/:animeId", async (req, res) => {
+  const malId = req.params.animeId.split("-").pop() || req.params.animeId;
+  try {
+    const d = await jikan(`/anime/${malId}/characters`);
+    respond(res, (d.data || []).slice(0, 30).map((c) => ({
+      character: { id: c.character?.mal_id, name: c.character?.name, poster: c.character?.images?.webp?.image_url || c.character?.images?.jpg?.image_url || "" },
+      voiceActors: (c.voice_actors || []).slice(0, 2).map((va) => ({ id: va.person?.mal_id, name: va.person?.name, poster: va.person?.images?.jpg?.image_url || "" })),
+    })));
+  } catch (err) { fail(res, err); }
+});
+
+app.get("/api/producer/:producerId", async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  try {
+    const d = await jikan("/top/anime", { page, limit: 20 });
+    respond(res, {
+      data: (d.data || []).map(transformAnime),
+      totalPages: d.pagination?.last_visible_page || 1,
+      hasNextPage: d.pagination?.has_next_page || false,
+      currentPage: page,
+      producerName: req.params.producerId,
+      topAiringAnimes: [],
+    });
+  } catch (err) { fail(res, err); }
+});
+
+app.get("/api/genre/:genreName", async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const genreMap = {
+    action: 1, adventure: 2, comedy: 4, drama: 8, fantasy: 10,
+    horror: 14, mystery: 7, romance: 22, "sci-fi": 24, "slice-of-life": 36,
+    "slice of life": 36, sports: 30, supernatural: 37, thriller: 41,
+  };
+  const genreId = genreMap[req.params.genreName.toLowerCase()] || 1;
+  try {
+    const d = await jikan("/anime", { genres: genreId, page, limit: 20, sfw: true });
+    respond(res, {
+      data: (d.data || []).map(transformAnime),
+      totalPages: d.pagination?.last_visible_page || 1,
+      hasNextPage: d.pagination?.has_next_page || false,
+      currentPage: page,
+      genreName: req.params.genreName,
+      topAiringAnimes: [],
+    });
+  } catch (err) { fail(res, err); }
+});
+
+app.get("/api/az-list/:letter", async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  try {
+    const d = await jikan("/anime", { letter: req.params.letter, page, limit: 20, sfw: true });
+    respond(res, {
+      data: (d.data || []).map(transformAnime),
+      totalPages: d.pagination?.last_visible_page || 1,
+      hasNextPage: d.pagination?.has_next_page || false,
+      currentPage: page,
+    });
+  } catch (err) { fail(res, err); }
+});
+
+app.get("/api/:category", async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const category = req.params.category;
+  const filterMap = {
+    "top-airing": "airing", "most-popular": "bypopularity",
+    "most-favorite": "favorite", "subbed-anime": "airing",
+    "dubbed-anime": "airing", "recently-added": "airing", "top-upcoming": "upcoming",
+  };
+  try {
+    let d;
+    if (filterMap[category]) {
+      d = await jikan("/top/anime", { filter: filterMap[category], page, limit: 20 });
+    } else if (["movie", "tv", "ova", "ona", "special"].includes(category)) {
+      d = await jikan("/top/anime", { type: category, page, limit: 20 });
+    } else {
+      d = await jikan("/top/anime", { page, limit: 20 });
+    }
+    respond(res, {
+      data: (d.data || []).map(transformAnime),
+      totalPages: d.pagination?.last_visible_page || 1,
+      hasNextPage: d.pagination?.has_next_page || false,
+      currentPage: page,
+      category,
+    });
+  } catch (err) { fail(res, err); }
+});
+
+export default app;

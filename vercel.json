@@ -1,0 +1,10 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/handler" },
+    { "source": "/auth/:path*", "destination": "/api/handler" },
+    { "source": "/admin/:path*", "destination": "/api/handler" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
