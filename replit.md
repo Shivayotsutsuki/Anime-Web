@@ -10,7 +10,7 @@ This project is a patched and rebranded version of a reverse-engineered anime st
 
 - **Frontend**: React 18, React Router v6, Axios, TailwindCSS, FontAwesome
 - **Build Tool**: Vite 5 (port 5000, proxies `/api`, `/auth`, `/admin` to the backend)
-- **Backend API**: Local Express.js server (port 3001) using the `aniwatch` npm package
+- **Backend API**: Local Express.js server (port 3001) using the Jikan public API (MyAnimeList)
 - **Entry Point**: `src/main.jsx` → imports `src/bundle.js` + `src/overlay/index.jsx`
 - **Styles**: `css/main.css` (TailwindCSS output), FontAwesome, `src/overlay/styles.css`
 
@@ -24,7 +24,7 @@ This project is a patched and rebranded version of a reverse-engineered anime st
 - `src/overlay/ScheduleView.jsx` — Anime release calendar
 - `src/overlay/AuthModal.jsx` — Login/Register modal
 - `src/overlay/styles.css` — Overlay UI styles
-- `server/index.mjs` — Local API server (Express + aniwatch scraper + auth routes)
+- `server/index.mjs` — Local API server (Express + Jikan API proxy + auth routes)
 - `data/users.json` — User storage (auto-created)
 - `index.html` — HTML template
 - `vite.config.js` — Vite configuration with proxy to backend
