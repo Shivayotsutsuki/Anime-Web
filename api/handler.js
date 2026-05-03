@@ -462,10 +462,16 @@ app.get("/api/producer/:producerId", async (req, res) => {
 app.get("/api/genre/:genreName", async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const genreMap = {
-    action: 1, adventure: 2, comedy: 4, drama: 8, fantasy: 10,
-    horror: 14, mystery: 7, romance: 22, "sci-fi": 24, "slice-of-life": 36,
-    "slice of life": 36, sports: 30, supernatural: 37, thriller: 41,
-    ecchi: 9, mecha: 18, music: 19, psychological: 40, school: 23,
+    action: 1, adventure: 2, cars: 3, comedy: 4, dementia: 5,
+    demons: 6, mystery: 7, drama: 8, ecchi: 9, fantasy: 10,
+    game: 11, historical: 13, horror: 14, kids: 15, magic: 16,
+    "martial-arts": 17, mecha: 18, music: 19, parody: 20,
+    samurai: 21, romance: 22, school: 23, "sci-fi": 24, shoujo: 25,
+    "shoujo-ai": 26, shounen: 27, "shounen-ai": 28, space: 29,
+    sports: 30, "super-power": 31, vampire: 32, harem: 35,
+    "slice-of-life": 36, "slice of life": 36, supernatural: 37,
+    military: 38, police: 39, psychological: 40, thriller: 41,
+    seinen: 42, josei: 43, isekai: 62,
   };
   const genreId = genreMap[req.params.genreName.toLowerCase()] || 1;
   try {
@@ -477,6 +483,19 @@ app.get("/api/genre/:genreName", async (req, res) => {
       currentPage: page,
       genreName: req.params.genreName,
       topAiringAnimes: [],
+    });
+  } catch (err) { fail(res, err); }
+});
+
+app.get("/api/az-list", async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  try {
+    const d = await jikan("/anime", { order_by: "title", sort: "asc", page, limit: 20, sfw: true });
+    respond(res, {
+      data: (d.data || []).map(transformAnime),
+      totalPages: d.pagination?.last_visible_page || 1,
+      hasNextPage: d.pagination?.has_next_page || false,
+      currentPage: page,
     });
   } catch (err) { fail(res, err); }
 });

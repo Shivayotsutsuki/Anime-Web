@@ -57,7 +57,8 @@ Uses **Jikan v4** (MyAnimeList public API) at `https://api.jikan.moe/v4`. Featur
 - `GET /api/schedule` → weekly airing schedule (from Jikan /schedules)
 - `GET /api/schedule/{animeId}` → single anime broadcast info
 - `GET /api/qtip/{animeId}` → quick tooltip info card
-- `GET /api/genre/{genreName}` → anime by genre (maps name→MAL genre ID)
+- `GET /api/genre/{genreName}` → anime by genre (maps name→MAL genre ID, covers all 25+ genres)
+- `GET /api/az-list` → anime list sorted alphabetically (base route, no letter filter)
 - `GET /api/az-list/{letter}` → anime by first letter
 - `GET /api/top-airing` → top airing anime
 - `GET /api/most-popular` → most popular anime
@@ -113,4 +114,9 @@ npm run dev             # Start frontend (port 5000, proxies /api, /auth, /admin
 
 - **No video streaming**: Jikan is metadata-only. The watch page player will be empty (black screen) — there is no CDN/video source. This is a frontend demo/streaming interface.
 - **Jikan rate limits**: 3 req/sec. Mitigated by in-memory caching + retry logic.
-- **Vercel Analytics 404s**: Harmless, baked into bundle.js (no Vercel Pro account).
+- **Vercel Analytics 404s**: Harmless, baked into bundle.js (no Vercel Pro account). The 2 "Failed to load resource" console messages on every page are the Vercel speed-insights and web-analytics scripts — expected to fail on dev/Replit.
+
+## CSS Notes
+
+- **Landing page (`/`)**: `.splash-container` uses `opacity: 1` (not 0). Child elements (`.hero-content-minimal`, `.hero-title-minimal`, etc.) have their staggered `fadeInUp both` animations overridden via `.splash-container *` selectors to prevent invisible-on-load. The bundle still adds `.visible` class via JS (harmless no-op).
+- **FontAwesome**: The CSS-based `fontawesome.min.css` is NOT linked in `index.html` — the bundle uses SVG-based FontAwesome via npm. Linking it would cause 6 font file 404s.

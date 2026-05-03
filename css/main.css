@@ -2439,7 +2439,7 @@ footer {
     overflow-x: hidden;
     overflow-y: auto;
     scroll-behavior: smooth;
-    opacity: 0;
+    opacity: 1;
     transition: opacity .8s ease-in-out
 }
 
@@ -3061,6 +3061,24 @@ footer {
     max-width: 500px;
     margin: 0 auto 40px;
     animation: fadeInUp .8s ease-out .9s both
+}
+
+.splash-container .hero-content,
+.splash-container .logo-container,
+.splash-container .hero-title,
+.splash-container .hero-subtitle,
+.splash-container .search-container,
+.splash-container .action-buttons,
+.splash-container .stats-container,
+.splash-container .feature-card,
+.splash-container .hero-content-minimal,
+.splash-container .logo-container-minimal,
+.splash-container .hero-title-minimal,
+.splash-container .hero-subtitle-minimal,
+.splash-container .search-container-minimal {
+    animation: none;
+    opacity: 1;
+    transform: none
 }
 
 .search-input-minimal {
