@@ -355,12 +355,15 @@ app.get("/api/info", async (req, res) => {
 });
 
 app.get("/api/episodes/:animeId", async (req, res) => {
-  const malId = req.params.animeId.replace(/[^0-9]/g, "") || req.params.animeId;
+  const malId = parseInt(req.params.animeId.replace(/[^0-9]/g, "") || req.params.animeId, 10);
   try {
     const infoResp = await jikan(`/anime/${malId}`);
     const totalEpisodes = infoResp.data?.episodes || 0;
+    // Encode malId + episode number into the id so the player can resolve the correct anime.
+    // Format: "x?ep=<malId*100000+epNum>" — the bundle extracts the number after "ep=" and
+    // sends it to /api/embed/:encodedId/:type where we decode back to malId and episode.
     const episodes = Array.from({ length: Math.min(totalEpisodes, 500) }, (_, i) => ({
-      id: `${malId}?ep=${i + 1}`,
+      id: `x?ep=${malId * 100000 + (i + 1)}`,
       number: i + 1,
       episode_no: i + 1,
       title: `Episode ${i + 1}`,
@@ -370,25 +373,58 @@ app.get("/api/episodes/:animeId", async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
+// ─── ani.zip mapping cache (MAL → TMDB) ─────────────────────────────────────
+const mappingCache = new Map();
+async function getTmdbId(malId) {
+  if (mappingCache.has(malId)) return mappingCache.get(malId);
+  try {
+    const r = await axios.get(`https://api.ani.zip/mappings?mal_id=${malId}`, { timeout: 8000 });
+    const id = r.data?.mappings?.themoviedb_id || null;
+    mappingCache.set(malId, id);
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+// Encode malId + episode into a single number: malId * 100000 + ep
+// This lets the bundle extract it via /ep=(\d+)/ and we can decode it server-side
+function encodeEpId(malId, ep) { return malId * 100000 + ep; }
+function decodeEpId(encoded) {
+  const n = parseInt(encoded, 10);
+  return { malId: Math.floor(n / 100000), ep: n % 100000 };
+}
+
 app.get("/api/servers/:animeId", async (req, res) => {
+  const ep = req.query.ep || "1";
   respond(res, [
-    { type: "sub", serverName: "HD-1", data_id: req.query.ep || "1", server_id: "1" },
-    { type: "dub", serverName: "HD-1", data_id: req.query.ep || "1", server_id: "1" },
+    { type: "sub", serverName: "HD-1", data_id: ep, server_id: "1" },
+    { type: "dub", serverName: "HD-1", data_id: ep, server_id: "2" },
   ]);
 });
 
 app.get("/api/stream", async (req, res) => {
   res.json({
     results: {
-      streamingLink: {
-        link: { file: "" },
-        iframe: null,
-        intro: null,
-        outro: null,
-        tracks: [],
-      },
+      streamingLink: { link: { file: "" }, iframe: null, intro: null, outro: null, tracks: [] },
     },
   });
+});
+
+// ─── Embed proxy page ─────────────────────────────────────────────────────────
+app.get("/api/embed/:encodedId/:type", async (req, res) => {
+  const { malId, ep } = decodeEpId(req.params.encodedId);
+  let src = "";
+  try {
+    const tmdbId = await getTmdbId(malId);
+    if (tmdbId) src = `https://www.2embed.cc/embedtv/${tmdbId}&s=1&e=${ep}`;
+  } catch {}
+
+  if (!src) {
+    return res.redirect("https://www.2embed.cc/");
+  }
+
+  res.redirect(302, src);
 });
 
 app.get("/api/schedule", async (req, res) => {
