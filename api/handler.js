@@ -356,17 +356,18 @@ app.get("/api/info", async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
-// ─── ani.zip mapping cache (MAL → TMDB) ─────────────────────────────────────
+// ─── ani.zip mapping cache (MAL → TMDB + type) ───────────────────────────────
 const mappingCache = new Map();
-async function getTmdbId(malId) {
+async function getMapping(malId) {
   if (mappingCache.has(malId)) return mappingCache.get(malId);
   try {
     const r = await axios.get(`https://api.ani.zip/mappings?mal_id=${malId}`, { timeout: 8000 });
-    const id = r.data?.mappings?.themoviedb_id || null;
-    mappingCache.set(malId, id);
-    return id;
+    const m = r.data?.mappings || {};
+    const result = { tmdbId: m.themoviedb_id || null, type: (m.type || "TV").toLowerCase() };
+    mappingCache.set(malId, result);
+    return result;
   } catch {
-    return null;
+    return { tmdbId: null, type: "tv" };
   }
 }
 
@@ -411,8 +412,14 @@ app.get("/api/embed/:encodedId/:type", async (req, res) => {
   const { malId, ep } = decodeEpId(req.params.encodedId);
   let src = "";
   try {
-    const tmdbId = await getTmdbId(malId);
-    if (tmdbId) src = `https://www.2embed.cc/embedtv/${tmdbId}&s=1&e=${ep}`;
+    const { tmdbId, type } = await getMapping(malId);
+    if (tmdbId) {
+      if (type === "movie") {
+        src = `https://www.2embed.cc/embed/${tmdbId}`;
+      } else {
+        src = `https://www.2embed.cc/embedtv/${tmdbId}&s=1&e=${ep}`;
+      }
+    }
   } catch {}
 
   if (!src) return res.redirect("https://www.2embed.cc/");
