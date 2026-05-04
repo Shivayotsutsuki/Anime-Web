@@ -395,8 +395,12 @@ app.get("/api/episodes/:animeId", async (req, res) => {
 app.get("/api/servers/:animeId", async (req, res) => {
   const ep = req.query.ep || "1";
   respond(res, [
-    { type: "sub", serverName: "HD-1", data_id: ep, server_id: "1" },
-    { type: "dub", serverName: "HD-1", data_id: ep, server_id: "2" },
+    { type: "sub", serverName: "HD-1", data_id: `${ep}-s1`, server_id: "1" },
+    { type: "dub", serverName: "HD-1", data_id: `${ep}-d1`, server_id: "2" },
+    { type: "sub", serverName: "HD-2", data_id: `${ep}-s2`, server_id: "3" },
+    { type: "dub", serverName: "HD-2", data_id: `${ep}-d2`, server_id: "4" },
+    { type: "sub", serverName: "HD-3", data_id: `${ep}-s3`, server_id: "5" },
+    { type: "dub", serverName: "HD-3", data_id: `${ep}-d3`, server_id: "6" },
   ]);
 });
 
@@ -408,22 +412,49 @@ app.get("/api/stream", async (req, res) => {
   });
 });
 
+// ─── HD-1 / HD-4 → 2embed.cc ─────────────────────────────────────────────────
 app.get("/api/embed/:encodedId/:type", async (req, res) => {
   const { malId, ep } = decodeEpId(req.params.encodedId);
-  let src = "";
   try {
     const { tmdbId, type } = await getMapping(malId);
     if (tmdbId) {
-      if (type === "movie") {
-        src = `https://www.2embed.cc/embed/${tmdbId}`;
-      } else {
-        src = `https://www.2embed.cc/embedtv/${tmdbId}&s=1&e=${ep}`;
-      }
+      const src = type === "movie"
+        ? `https://www.2embed.cc/embed/${tmdbId}`
+        : `https://www.2embed.cc/embedtv/${tmdbId}&s=1&e=${ep}`;
+      return res.redirect(302, src);
     }
   } catch {}
+  res.redirect(302, "https://www.2embed.cc/");
+});
 
-  if (!src) return res.redirect("https://www.2embed.cc/");
-  res.redirect(302, src);
+// ─── HD-2 → vidsrc.to ────────────────────────────────────────────────────────
+app.get("/api/embed2/:encodedId/:type", async (req, res) => {
+  const { malId, ep } = decodeEpId(req.params.encodedId);
+  try {
+    const { tmdbId, type } = await getMapping(malId);
+    if (tmdbId) {
+      const src = type === "movie"
+        ? `https://vidsrc.to/embed/movie/${tmdbId}`
+        : `https://vidsrc.to/embed/tv/${tmdbId}/1/${ep}`;
+      return res.redirect(302, src);
+    }
+  } catch {}
+  res.redirect(302, "https://vidsrc.to/");
+});
+
+// ─── HD-3 → vidlink.pro ──────────────────────────────────────────────────────
+app.get("/api/embed3/:encodedId/:type", async (req, res) => {
+  const { malId, ep } = decodeEpId(req.params.encodedId);
+  try {
+    const { tmdbId, type } = await getMapping(malId);
+    if (tmdbId) {
+      const src = type === "movie"
+        ? `https://vidlink.pro/movie/${tmdbId}`
+        : `https://vidlink.pro/tv/${tmdbId}/1/${ep}`;
+      return res.redirect(302, src);
+    }
+  } catch {}
+  res.redirect(302, "https://vidlink.pro/");
 });
 
 app.get("/api/schedule", async (req, res) => {
