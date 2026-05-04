@@ -416,49 +416,57 @@ app.get("/api/stream", async (req, res) => {
   });
 });
 
-// ─── Embed proxy routes (HD-1 / HD-4 → 2embed.cc) ───────────────────────────
+// ─── Proxy iframe HTML helper ─────────────────────────────────────────────────
+function proxyPage(src) {
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>*{margin:0;padding:0;box-sizing:border-box}html,body{width:100%;height:100%;background:#000;overflow:hidden}iframe{width:100%;height:100%;border:none;display:block}</style></head><body><iframe src="${src}" allowfullscreen allow="autoplay; fullscreen; picture-in-picture; encrypted-media; clipboard-write" referrerpolicy="no-referrer-when-downgrade"></iframe></body></html>`;
+}
+
+// ─── HD-1 / HD-4 → 2embed.cc ─────────────────────────────────────────────────
 app.get("/api/embed/:encodedId/:type", async (req, res) => {
   const { malId, ep } = decodeEpId(req.params.encodedId);
+  let src = "https://www.2embed.cc/";
   try {
     const { tmdbId, type } = await getMapping(malId);
     if (tmdbId) {
-      const src = type === "movie"
+      src = type === "movie"
         ? `https://www.2embed.cc/embed/${tmdbId}`
         : `https://www.2embed.cc/embedtv/${tmdbId}&s=1&e=${ep}`;
-      return res.redirect(302, src);
     }
   } catch {}
-  res.redirect(302, "https://www.2embed.cc/");
+  res.setHeader("Content-Type", "text/html");
+  res.send(proxyPage(src));
 });
 
 // ─── HD-2 → vidsrc.to ────────────────────────────────────────────────────────
 app.get("/api/embed2/:encodedId/:type", async (req, res) => {
   const { malId, ep } = decodeEpId(req.params.encodedId);
+  let src = "https://vidsrc.to/";
   try {
     const { tmdbId, type } = await getMapping(malId);
     if (tmdbId) {
-      const src = type === "movie"
+      src = type === "movie"
         ? `https://vidsrc.to/embed/movie/${tmdbId}`
         : `https://vidsrc.to/embed/tv/${tmdbId}/1/${ep}`;
-      return res.redirect(302, src);
     }
   } catch {}
-  res.redirect(302, "https://vidsrc.to/");
+  res.setHeader("Content-Type", "text/html");
+  res.send(proxyPage(src));
 });
 
 // ─── HD-3 → vidlink.pro ──────────────────────────────────────────────────────
 app.get("/api/embed3/:encodedId/:type", async (req, res) => {
   const { malId, ep } = decodeEpId(req.params.encodedId);
+  let src = "https://vidlink.pro/";
   try {
     const { tmdbId, type } = await getMapping(malId);
     if (tmdbId) {
-      const src = type === "movie"
+      src = type === "movie"
         ? `https://vidlink.pro/movie/${tmdbId}`
         : `https://vidlink.pro/tv/${tmdbId}/1/${ep}`;
-      return res.redirect(302, src);
     }
   } catch {}
-  res.redirect(302, "https://vidlink.pro/");
+  res.setHeader("Content-Type", "text/html");
+  res.send(proxyPage(src));
 });
 
 app.get("/api/schedule", async (req, res) => {
