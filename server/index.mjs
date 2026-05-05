@@ -327,7 +327,6 @@ app.get("/api/info", async (req, res) => {
       poster: r.entry?.images?.webp?.image_url || r.entry?.images?.jpg?.image_url || "",
     }));
 
-    // The bundle accesses data.animeInfo.tvInfo — so we nest it
     const data = {
       ...baseData,
       animeInfo: { ...baseData },
@@ -344,9 +343,36 @@ app.get("/api/info", async (req, res) => {
       }))
     );
 
+    // Build seasons from Sequel/Prequel relations
+    const sequelEntries = (a.relations || [])
+      .filter(r => ["Sequel", "Prequel", "Alternative version"].includes(r.relation))
+      .flatMap(r => (r.entry || []).filter(e => e.type === "anime"))
+      .slice(0, 5);
+
+    let seasons = [];
+    if (sequelEntries.length > 0) {
+      const posterResults = await Promise.allSettled(
+        sequelEntries.map(e => jikan(`/anime/${e.mal_id}`))
+      );
+      seasons = [
+        {
+          id: String(malId),
+          season: a.title_english || a.title,
+          season_poster: a.images?.webp?.large_image_url || a.images?.jpg?.large_image_url || "",
+        },
+        ...sequelEntries.map((e, i) => ({
+          id: String(e.mal_id),
+          season: e.name,
+          season_poster: posterResults[i].status === "fulfilled"
+            ? (posterResults[i].value?.data?.images?.webp?.large_image_url || posterResults[i].value?.data?.images?.jpg?.large_image_url || "")
+            : "",
+        })),
+      ];
+    }
+
     respond(res, {
       data,
-      seasons: [],
+      seasons,
       relatedAnimes,
       recommendedAnimes: recommended_data,
       mostPopularAnimes: [],
@@ -405,6 +431,8 @@ app.get("/api/servers/:animeId", async (req, res) => {
     { type: "dub", serverName: "HD-2", data_id: `${ep}-d2`, server_id: "4" },
     { type: "sub", serverName: "HD-3", data_id: `${ep}-s3`, server_id: "5" },
     { type: "dub", serverName: "HD-3", data_id: `${ep}-d3`, server_id: "6" },
+    { type: "sub", serverName: "HD-4", data_id: `${ep}-s4`, server_id: "7" },
+    { type: "dub", serverName: "HD-4", data_id: `${ep}-d4`, server_id: "8" },
   ]);
 });
 
@@ -416,12 +444,12 @@ app.get("/api/stream", async (req, res) => {
   });
 });
 
-// ─── Proxy iframe HTML helper ─────────────────────────────────────────────────
-function proxyPage(src) {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>*{margin:0;padding:0;box-sizing:border-box}html,body{width:100%;height:100%;background:#000;overflow:hidden}iframe{width:100%;height:100%;border:none;display:block}</style></head><body><iframe src="${src}" allowfullscreen allow="autoplay; fullscreen; picture-in-picture; encrypted-media; clipboard-write" referrerpolicy="no-referrer-when-downgrade"></iframe></body></html>`;
+// ─── Embed helper: serve a minimal HTML page that directly loads the provider ─
+function embedPage(src) {
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Player</title><style>*{margin:0;padding:0;box-sizing:border-box}html,body,iframe{width:100%;height:100%;border:none;display:block;background:#000;overflow:hidden}</style></head><body><iframe src="${src}" allowfullscreen allow="autoplay; fullscreen; picture-in-picture; encrypted-media; clipboard-write" referrerpolicy="no-referrer-when-downgrade" scrolling="no"></iframe></body></html>`;
 }
 
-// ─── HD-1 / HD-4 → 2embed.cc ─────────────────────────────────────────────────
+// ─── HD-1 → 2embed.cc ────────────────────────────────────────────────────────
 app.get("/api/embed/:encodedId/:type", async (req, res) => {
   const { malId, ep } = decodeEpId(req.params.encodedId);
   let src = "https://www.2embed.cc/";
@@ -430,11 +458,13 @@ app.get("/api/embed/:encodedId/:type", async (req, res) => {
     if (tmdbId) {
       src = type === "movie"
         ? `https://www.2embed.cc/embed/${tmdbId}`
-        : `https://www.2embed.cc/embedtv/${tmdbId}&s=1&e=${ep}`;
+        : `https://www.2embed.cc/embedtv/${tmdbId}?s=1&e=${ep}`;
     }
   } catch {}
+  res.removeHeader("X-Frame-Options");
   res.setHeader("Content-Type", "text/html");
-  res.send(proxyPage(src));
+  res.setHeader("Content-Security-Policy", "");
+  res.send(embedPage(src));
 });
 
 // ─── HD-2 → vidsrc.to ────────────────────────────────────────────────────────
@@ -449,8 +479,10 @@ app.get("/api/embed2/:encodedId/:type", async (req, res) => {
         : `https://vidsrc.to/embed/tv/${tmdbId}/1/${ep}`;
     }
   } catch {}
+  res.removeHeader("X-Frame-Options");
   res.setHeader("Content-Type", "text/html");
-  res.send(proxyPage(src));
+  res.setHeader("Content-Security-Policy", "");
+  res.send(embedPage(src));
 });
 
 // ─── HD-3 → vidlink.pro ──────────────────────────────────────────────────────
@@ -465,8 +497,28 @@ app.get("/api/embed3/:encodedId/:type", async (req, res) => {
         : `https://vidlink.pro/tv/${tmdbId}/1/${ep}`;
     }
   } catch {}
+  res.removeHeader("X-Frame-Options");
   res.setHeader("Content-Type", "text/html");
-  res.send(proxyPage(src));
+  res.setHeader("Content-Security-Policy", "");
+  res.send(embedPage(src));
+});
+
+// ─── HD-4 → vidsrc.me ────────────────────────────────────────────────────────
+app.get("/api/embed4/:encodedId/:type", async (req, res) => {
+  const { malId, ep } = decodeEpId(req.params.encodedId);
+  let src = "https://vidsrc.me/";
+  try {
+    const { tmdbId, type } = await getMapping(malId);
+    if (tmdbId) {
+      src = type === "movie"
+        ? `https://vidsrc.me/embed/movie?tmdb=${tmdbId}`
+        : `https://vidsrc.me/embed/tv?tmdb=${tmdbId}&season=1&episode=${ep}`;
+    }
+  } catch {}
+  res.removeHeader("X-Frame-Options");
+  res.setHeader("Content-Type", "text/html");
+  res.setHeader("Content-Security-Policy", "");
+  res.send(embedPage(src));
 });
 
 app.get("/api/schedule", async (req, res) => {
