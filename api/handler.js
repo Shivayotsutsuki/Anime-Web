@@ -439,82 +439,60 @@ app.get("/api/stream", async (req, res) => {
   });
 });
 
-// ─── Embed helper: serve a minimal HTML page that directly loads the provider ─
-function embedPage(src) {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Player</title><style>*{margin:0;padding:0;box-sizing:border-box}html,body,iframe{width:100%;height:100%;border:none;display:block;background:#000;overflow:hidden}</style></head><body><iframe src="${src}" allowfullscreen allow="autoplay; fullscreen; picture-in-picture; encrypted-media; clipboard-write" referrerpolicy="no-referrer-when-downgrade" scrolling="no"></iframe></body></html>`;
+// ─── Shared embed handler: redirect browser directly to provider URL ──────────
+async function handleEmbed(req, res, buildUrl) {
+  const { malId, ep } = decodeEpId(req.params.encodedId);
+  try {
+    const { tmdbId, type } = await getMapping(malId);
+    const url = buildUrl(tmdbId, type, ep);
+    if (url) {
+      res.redirect(302, url);
+      return;
+    }
+  } catch {}
+  const fallbackEp = decodeEpId(req.params.encodedId);
+  res.redirect(302, `https://vidsrc.xyz/embed/tv?mal=${fallbackEp.malId}&season=1&episode=${fallbackEp.ep}`);
 }
 
 // ─── HD-1 → 2embed.cc ────────────────────────────────────────────────────────
-app.get("/api/embed/:encodedId/:type", async (req, res) => {
-  const { malId, ep } = decodeEpId(req.params.encodedId);
-  let src = "https://www.2embed.cc/";
-  try {
-    const { tmdbId, type } = await getMapping(malId);
-    if (tmdbId) {
-      src = type === "movie"
-        ? `https://www.2embed.cc/embed/${tmdbId}`
-        : `https://www.2embed.cc/embedtv/${tmdbId}?s=1&e=${ep}`;
-    }
-  } catch {}
-  res.removeHeader("X-Frame-Options");
-  res.setHeader("Content-Type", "text/html");
-  res.setHeader("Content-Security-Policy", "");
-  res.send(embedPage(src));
-});
+app.get("/api/embed/:encodedId/:type", (req, res) =>
+  handleEmbed(req, res, (tmdbId, type, ep) => {
+    if (!tmdbId) return null;
+    return type === "movie"
+      ? `https://www.2embed.cc/embed/${tmdbId}`
+      : `https://www.2embed.cc/embedtv/${tmdbId}?s=1&e=${ep}`;
+  })
+);
 
-// ─── HD-2 → vidsrc.to ────────────────────────────────────────────────────────
-app.get("/api/embed2/:encodedId/:type", async (req, res) => {
-  const { malId, ep } = decodeEpId(req.params.encodedId);
-  let src = "https://vidsrc.to/";
-  try {
-    const { tmdbId, type } = await getMapping(malId);
-    if (tmdbId) {
-      src = type === "movie"
-        ? `https://vidsrc.to/embed/movie/${tmdbId}`
-        : `https://vidsrc.to/embed/tv/${tmdbId}/1/${ep}`;
-    }
-  } catch {}
-  res.removeHeader("X-Frame-Options");
-  res.setHeader("Content-Type", "text/html");
-  res.setHeader("Content-Security-Policy", "");
-  res.send(embedPage(src));
-});
+// ─── HD-2 → vidsrc.xyz ───────────────────────────────────────────────────────
+app.get("/api/embed2/:encodedId/:type", (req, res) =>
+  handleEmbed(req, res, (tmdbId, type, ep) => {
+    if (!tmdbId) return null;
+    return type === "movie"
+      ? `https://vidsrc.xyz/embed/movie?tmdb=${tmdbId}`
+      : `https://vidsrc.xyz/embed/tv?tmdb=${tmdbId}&season=1&episode=${ep}`;
+  })
+);
 
 // ─── HD-3 → vidlink.pro ──────────────────────────────────────────────────────
-app.get("/api/embed3/:encodedId/:type", async (req, res) => {
-  const { malId, ep } = decodeEpId(req.params.encodedId);
-  let src = "https://vidlink.pro/";
-  try {
-    const { tmdbId, type } = await getMapping(malId);
-    if (tmdbId) {
-      src = type === "movie"
-        ? `https://vidlink.pro/movie/${tmdbId}`
-        : `https://vidlink.pro/tv/${tmdbId}/1/${ep}`;
-    }
-  } catch {}
-  res.removeHeader("X-Frame-Options");
-  res.setHeader("Content-Type", "text/html");
-  res.setHeader("Content-Security-Policy", "");
-  res.send(embedPage(src));
-});
+app.get("/api/embed3/:encodedId/:type", (req, res) =>
+  handleEmbed(req, res, (tmdbId, type, ep) => {
+    if (!tmdbId) return null;
+    return type === "movie"
+      ? `https://vidlink.pro/movie/${tmdbId}`
+      : `https://vidlink.pro/tv/${tmdbId}/1/${ep}`;
+  })
+);
 
 // ─── HD-4 → vidsrc.me ────────────────────────────────────────────────────────
-app.get("/api/embed4/:encodedId/:type", async (req, res) => {
-  const { malId, ep } = decodeEpId(req.params.encodedId);
-  let src = "https://vidsrc.me/";
-  try {
-    const { tmdbId, type } = await getMapping(malId);
-    if (tmdbId) {
-      src = type === "movie"
-        ? `https://vidsrc.me/embed/movie?tmdb=${tmdbId}`
-        : `https://vidsrc.me/embed/tv?tmdb=${tmdbId}&season=1&episode=${ep}`;
-    }
-  } catch {}
-  res.removeHeader("X-Frame-Options");
-  res.setHeader("Content-Type", "text/html");
-  res.setHeader("Content-Security-Policy", "");
-  res.send(embedPage(src));
-});
+app.get("/api/embed4/:encodedId/:type", (req, res) =>
+  handleEmbed(req, res, (tmdbId, type, ep) => {
+    if (!tmdbId) return null;
+    return type === "movie"
+      ? `https://vidsrc.me/embed/movie?tmdb=${tmdbId}`
+      : `https://vidsrc.me/embed/tv?tmdb=${tmdbId}&season=1&episode=${ep}`;
+  })
+);
 
 app.get("/api/schedule", async (req, res) => {
   try {

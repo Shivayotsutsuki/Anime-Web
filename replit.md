@@ -54,6 +54,10 @@ Uses **Jikan v4** (MyAnimeList public API) at `https://api.jikan.moe/v4`. Featur
 - `GET /api/episodes/{animeId}` → episode list — `{ results: { episodes: [{id, number, title}], totalEpisodes } }`
 - `GET /api/servers/{animeId}?ep={epId}` → server list (always HD-1 sub+dub stubs)
 - `GET /api/stream?id={epId}&server={s}&type={t}` → streaming sources (returns empty link — no CDN)
+- `GET /api/embed/:encodedId/:type` → HD-1: redirects (302) to 2embed.cc with TMDB ID
+- `GET /api/embed2/:encodedId/:type` → HD-2: redirects (302) to vidsrc.xyz with TMDB ID
+- `GET /api/embed3/:encodedId/:type` → HD-3: redirects (302) to vidlink.pro with TMDB ID
+- `GET /api/embed4/:encodedId/:type` → HD-4: redirects (302) to vidsrc.me with TMDB ID
 - `GET /api/schedule` → weekly airing schedule (from Jikan /schedules)
 - `GET /api/schedule/{animeId}` → single anime broadcast info
 - `GET /api/qtip/{animeId}` → quick tooltip info card
