@@ -436,54 +436,113 @@ app.get("/api/servers/:animeId", async (req, res) => {
   ]);
 });
 
-app.get("/api/stream", async (req, res) => {
+app.get("/api/stream", (req, res) => {
   res.json({
-    results: {
-      streamingLink: { link: { file: "" }, iframe: null, intro: null, outro: null, tracks: [] },
-    },
+    results: { streamingLink: { link: { file: "" }, iframe: null, intro: null, outro: null, tracks: [] } },
   });
 });
 
-// ─── Shared embed handler: redirect browser directly to provider URL ──────────
-// Redirecting removes the extra HTML wrapper layer, reducing iframe nesting
-// from 4-deep (Replit→Bundle→OurHTML→Provider) to 3-deep (Replit→Bundle→Provider)
+// ─── Shared embed handler ─────────────────────────────────────────────────────
+// Proxies provider HTML from our server so the bundle's iframe is same-origin.
+// Same-origin iframe → window.top === window → providers can't detect sandbox.
+// Injected patch also explicitly overrides top/parent/frameElement to be safe.
+const EMBED_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+// Patch injected into provider HTML — neutralises sandbox-detection checks.
+// We create a fake window.top that is NOT equal to window (so providers that
+// check "if(window===window.top){redirect}" keep showing the player), but whose
+// .location is accessible (so "try{window.top.location.href}catch{sandboxError}"
+// doesn't throw).
+const SANDBOX_PATCH = `<script>
+(function(){
+  var w=window;
+  // 1. Fake window.top: NOT equal to window (so "if(window===window.top){redirect}" stays false)
+  //    but .location is readable (so sandbox try/catch doesn't throw).
+  var fakeTop={
+    location:{href:w.location.href,hostname:w.location.hostname,protocol:w.location.protocol,origin:w.location.origin,pathname:w.location.pathname},
+    document:w.document,postMessage:w.postMessage.bind(w),
+    addEventListener:w.addEventListener.bind(w),frames:[],length:0,closed:false
+  };
+  fakeTop.window=fakeTop; fakeTop.top=fakeTop; fakeTop.parent=fakeTop; fakeTop.self=fakeTop;
+  function def(k,v){try{Object.defineProperty(w,k,{get:function(){return v;},configurable:true});}catch(e){}}
+  def('top',fakeTop); def('parent',fakeTop); def('frameElement',null);
+
+  // 2. Fix relative fetch/XHR calls so they resolve to the PROVIDER origin
+  //    (not our proxy domain). The provider origin is set in <base href="...">.
+  var providerOrigin=(document.querySelector('base')||{}).href||'';
+  providerOrigin=providerOrigin.replace(/\\/$/,'');
+  if(providerOrigin){
+    var _fetch=w.fetch;
+    w.fetch=function(url,opts){
+      if(typeof url==='string'&&url.charAt(0)==='/'){url=providerOrigin+url;}
+      return _fetch.call(w,url,opts);
+    };
+    var _open=XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open=function(m,url){
+      if(typeof url==='string'&&url.charAt(0)==='/'){url=providerOrigin+url;}
+      return _open.apply(this,arguments);
+    };
+  }
+})();
+</script>`;
+
 async function handleEmbed(req, res, buildUrl) {
   const { malId, ep } = decodeEpId(req.params.encodedId);
+  let providerUrl = null;
+
   try {
     const { tmdbId, type } = await getMapping(malId);
-    const url = buildUrl(tmdbId, type, ep);
-    if (url) {
-      res.redirect(302, url);
-      return;
-    }
+    providerUrl = buildUrl(tmdbId, type, ep);
   } catch {}
-  // Fallback: use vidsrc.xyz with the encoded ID directly (works without TMDB)
-  const fallbackEp = decodeEpId(req.params.encodedId);
-  res.redirect(302, `https://vidsrc.xyz/embed/tv?mal=${fallbackEp.malId}&season=1&episode=${fallbackEp.ep}`);
+
+  if (!providerUrl) {
+    const { malId: m, ep: e } = decodeEpId(req.params.encodedId);
+    providerUrl = `https://vidsrc.xyz/embed/tv?tmdb=${m}&season=1&episode=${e}`;
+  }
+
+  try {
+    const response = await axios.get(providerUrl, {
+      timeout: 12000,
+      maxRedirects: 5,
+      headers: {
+        "User-Agent": EMBED_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.google.com/",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "cross-site",
+      },
+      validateStatus: s => s < 500,
+    });
+
+    let html = typeof response.data === "string" ? response.data : JSON.stringify(response.data);
+    if (!html.includes("<html") && !html.includes("<!DOCTYPE")) throw new Error("Non-HTML response");
+
+    // Determine the actual base URL (after any redirects) for relative assets
+    const finalUrl = response.request?.res?.responseUrl || providerUrl;
+    const baseOrigin = new URL(finalUrl).origin;
+
+    // Inject base tag + sandbox-detection patch right after <head>
+    // If no <head>, inject at the very start
+    if (/<head[^>]*>/i.test(html)) {
+      html = html.replace(/(<head[^>]*>)/i, `$1<base href="${baseOrigin}/">${SANDBOX_PATCH}`);
+    } else {
+      html = `<base href="${baseOrigin}/">${SANDBOX_PATCH}` + html;
+    }
+
+    res.removeHeader("X-Frame-Options");
+    res.setHeader("Content-Security-Policy", "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;");
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(html);
+  } catch (err) {
+    console.error(`[Embed] proxy failed for ${providerUrl}: ${err.message} — falling back to redirect`);
+    res.redirect(302, providerUrl);
+  }
 }
 
-// ─── HD-1 → 2embed.cc ────────────────────────────────────────────────────────
+// ─── HD-1 → vidlink.pro (primary — no nested iframes, JWPlayer, SSR data) ────
 app.get("/api/embed/:encodedId/:type", (req, res) =>
-  handleEmbed(req, res, (tmdbId, type, ep) => {
-    if (!tmdbId) return null;
-    return type === "movie"
-      ? `https://www.2embed.cc/embed/${tmdbId}`
-      : `https://www.2embed.cc/embedtv/${tmdbId}?s=1&e=${ep}`;
-  })
-);
-
-// ─── HD-2 → vidsrc.xyz ───────────────────────────────────────────────────────
-app.get("/api/embed2/:encodedId/:type", (req, res) =>
-  handleEmbed(req, res, (tmdbId, type, ep) => {
-    if (!tmdbId) return null;
-    return type === "movie"
-      ? `https://vidsrc.xyz/embed/movie?tmdb=${tmdbId}`
-      : `https://vidsrc.xyz/embed/tv?tmdb=${tmdbId}&season=1&episode=${ep}`;
-  })
-);
-
-// ─── HD-3 → vidlink.pro ──────────────────────────────────────────────────────
-app.get("/api/embed3/:encodedId/:type", (req, res) =>
   handleEmbed(req, res, (tmdbId, type, ep) => {
     if (!tmdbId) return null;
     return type === "movie"
@@ -492,13 +551,33 @@ app.get("/api/embed3/:encodedId/:type", (req, res) =>
   })
 );
 
-// ─── HD-4 → vidsrc.me ────────────────────────────────────────────────────────
-app.get("/api/embed4/:encodedId/:type", (req, res) =>
+// ─── HD-2 → vidsrc.me ────────────────────────────────────────────────────────
+app.get("/api/embed2/:encodedId/:type", (req, res) =>
   handleEmbed(req, res, (tmdbId, type, ep) => {
     if (!tmdbId) return null;
     return type === "movie"
       ? `https://vidsrc.me/embed/movie?tmdb=${tmdbId}`
       : `https://vidsrc.me/embed/tv?tmdb=${tmdbId}&season=1&episode=${ep}`;
+  })
+);
+
+// ─── HD-3 → 2embed.cc ────────────────────────────────────────────────────────
+app.get("/api/embed3/:encodedId/:type", (req, res) =>
+  handleEmbed(req, res, (tmdbId, type, ep) => {
+    if (!tmdbId) return null;
+    return type === "movie"
+      ? `https://www.2embed.cc/embed/${tmdbId}`
+      : `https://www.2embed.cc/embedtv/${tmdbId}?s=1&e=${ep}`;
+  })
+);
+
+// ─── HD-4 → vidsrc.xyz ───────────────────────────────────────────────────────
+app.get("/api/embed4/:encodedId/:type", (req, res) =>
+  handleEmbed(req, res, (tmdbId, type, ep) => {
+    if (!tmdbId) return null;
+    return type === "movie"
+      ? `https://vidsrc.xyz/embed/movie?tmdb=${tmdbId}`
+      : `https://vidsrc.xyz/embed/tv?tmdb=${tmdbId}&season=1&episode=${ep}`;
   })
 );
 

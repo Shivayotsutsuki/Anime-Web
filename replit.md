@@ -54,10 +54,27 @@ Uses **Jikan v4** (MyAnimeList public API) at `https://api.jikan.moe/v4`. Featur
 - `GET /api/episodes/{animeId}` → episode list — `{ results: { episodes: [{id, number, title}], totalEpisodes } }`
 - `GET /api/servers/{animeId}?ep={epId}` → server list (always HD-1 sub+dub stubs)
 - `GET /api/stream?id={epId}&server={s}&type={t}` → streaming sources (returns empty link — no CDN)
-- `GET /api/embed/:encodedId/:type` → HD-1: redirects (302) to 2embed.cc with TMDB ID
-- `GET /api/embed2/:encodedId/:type` → HD-2: redirects (302) to vidsrc.xyz with TMDB ID
-- `GET /api/embed3/:encodedId/:type` → HD-3: redirects (302) to vidlink.pro with TMDB ID
-- `GET /api/embed4/:encodedId/:type` → HD-4: redirects (302) to vidsrc.me with TMDB ID
+- `GET /api/embed/:encodedId/:type` → HD-1: **proxies** vidlink.pro HTML (same-origin, no nested iframes, JWPlayer, SSR TMDB data)
+- `GET /api/embed2/:encodedId/:type` → HD-2: **proxies** vidsrc.me HTML (same-origin proxy)
+- `GET /api/embed3/:encodedId/:type` → HD-3: **proxies** 2embed.cc HTML (same-origin proxy)
+- `GET /api/embed4/:encodedId/:type` → HD-4: **proxies** vidsrc.xyz HTML (same-origin proxy)
+
+### Embed Proxy Architecture (anti-sandbox-detection)
+All embed endpoints use `handleEmbed()` which:
+1. Resolves MAL ID → TMDB ID via TMDB API search
+2. Fetches provider HTML server-side (no client-side cross-origin iframe)
+3. Injects `<base href="providerOrigin/">` so relative asset URLs resolve correctly
+4. Injects `SANDBOX_PATCH` script that:
+   - Creates `fakeTop` object (≠ window) with accessible `.location` — neutralises both `if(window===window.top){redirect}` and `try{window.top.location.href}catch{sandboxError}` checks
+   - Overrides `fetch()` and `XMLHttpRequest.open()` to prepend provider origin to relative paths — so provider JS API calls go to the right server
+5. Removes `X-Frame-Options`, sets permissive CSP
+6. Falls back to 302 redirect if proxy fetch fails
+
+**Why vidlink.pro is HD-1 (primary):** It has zero nested iframes (Next.js SSR app with JWPlayer), so there is no cascading sandbox detection. All TMDB data is embedded in the SSR HTML — no additional API calls needed for initial render.
+
+**Bundle changes for playback:**
+- Early return removed: bundle no longer skips stream fetch for HD-1..4 servers
+- Render condition: `!streamUrl && isHDServer ? <IframePlayer> : <Artplayer>` — uses iframe embed when no direct stream URL
 - `GET /api/schedule` → weekly airing schedule (from Jikan /schedules)
 - `GET /api/schedule/{animeId}` → single anime broadcast info
 - `GET /api/qtip/{animeId}` → quick tooltip info card
