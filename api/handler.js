@@ -15,7 +15,7 @@ const TMP_DATA = "/tmp/users.json";
 
 // ─── Simple in-memory cache ───────────────────────────────────────────────────
 const cache = new Map();
-const CACHE_TTL = 5 * 60 * 1000;
+const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
 function cacheGet(key) {
   const entry = cache.get(key);
@@ -24,6 +24,25 @@ function cacheGet(key) {
   return entry.data;
 }
 function cacheSet(key, data) { cache.set(key, { data, ts: Date.now() }); }
+
+// ─── Home data stale-while-revalidate cache ───────────────────────────────────
+let _homeData = null, _homeDataTs = 0, _homeRevalidating = false;
+const HOME_FRESH = 30 * 60 * 1000;
+const HOME_STALE = 60 * 60 * 1000;
+async function getCachedHomeData() {
+  const age = Date.now() - _homeDataTs;
+  if (_homeData && age < HOME_FRESH) return _homeData;
+  if (_homeData && age < HOME_STALE) {
+    if (!_homeRevalidating) {
+      _homeRevalidating = true;
+      homeData().then(d => { _homeData = d; _homeDataTs = Date.now(); }).catch(() => {}).finally(() => { _homeRevalidating = false; });
+    }
+    return _homeData;
+  }
+  const d = await homeData();
+  _homeData = d; _homeDataTs = Date.now();
+  return d;
+}
 
 // ─── Jikan helper with rate-limit retry ──────────────────────────────────────
 async function jikan(p, params = {}, retries = 3) {
@@ -256,8 +275,8 @@ async function homeData() {
 }
 
 // ─── Anime API routes ─────────────────────────────────────────────────────────
-app.get("/api", async (req, res) => { try { respond(res, await homeData()); } catch (err) { fail(res, err); } });
-app.get("/api/home", async (req, res) => { try { respond(res, await homeData()); } catch (err) { fail(res, err); } });
+app.get("/api", async (req, res) => { try { respond(res, await getCachedHomeData()); } catch (err) { fail(res, err); } });
+app.get("/api/home", async (req, res) => { try { respond(res, await getCachedHomeData()); } catch (err) { fail(res, err); } });
 
 app.get("/api/random/id", async (req, res) => {
   try {
@@ -437,6 +456,36 @@ app.get("/api/stream", (req, res) => {
   });
 });
 
+// ─── vidlink.pro server-side CORS proxy ───────────────────────────────────────
+app.use("/api/vl-proxy", async (req, res) => {
+  const targetUrl = "https://vidlink.pro" + req.path + (req.url.includes("?") ? "?" + req.url.split("?").slice(1).join("?") : "");
+  try {
+    const response = await axios({
+      method: req.method === "POST" ? "POST" : "GET",
+      url: targetUrl,
+      headers: {
+        "User-Agent": EMBED_UA,
+        "Referer": "https://vidlink.pro/",
+        "Origin": "https://vidlink.pro",
+        "Accept": req.headers["accept"] || "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      data: req.method === "POST" ? req.body : undefined,
+      responseType: "arraybuffer",
+      maxRedirects: 5,
+      timeout: 12000,
+      validateStatus: () => true,
+    });
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    const ct = response.headers["content-type"] || "application/json";
+    res.setHeader("Content-Type", ct);
+    res.status(response.status).send(Buffer.from(response.data));
+  } catch (err) {
+    res.status(502).json({ error: "Proxy error", message: err.message });
+  }
+});
+
 // ─── Shared embed handler ─────────────────────────────────────────────────────
 // Proxies provider HTML from our server so the bundle's iframe is same-origin.
 // Same-origin iframe → window.top === window → providers can't detect sandbox.
@@ -445,8 +494,8 @@ const EMBED_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
 const SANDBOX_PATCH = `<script>
 (function(){
   var w=window;
-  // 1. Fake window.top: NOT equal to window (so "if(window===window.top){redirect}" stays false)
-  //    but .location is readable (so sandbox try/catch doesn't throw).
+  // 1. Fake window.top — NOT equal to window so providers don't redirect,
+  //    but .location is readable so sandbox try/catch doesn't throw.
   var fakeTop={
     location:{href:w.location.href,hostname:w.location.hostname,protocol:w.location.protocol,origin:w.location.origin,pathname:w.location.pathname},
     document:w.document,postMessage:w.postMessage.bind(w),
@@ -456,22 +505,21 @@ const SANDBOX_PATCH = `<script>
   function def(k,v){try{Object.defineProperty(w,k,{get:function(){return v;},configurable:true});}catch(e){}}
   def('top',fakeTop); def('parent',fakeTop); def('frameElement',null);
 
-  // 2. Fix relative fetch/XHR calls so they resolve to the PROVIDER origin
-  //    (not our proxy domain). The provider origin is set in <base href="...">.
-  var providerOrigin=(document.querySelector('base')||{}).href||'';
-  providerOrigin=providerOrigin.replace(/\\/$/,'');
-  if(providerOrigin){
-    var _fetch=w.fetch;
-    w.fetch=function(url,opts){
-      if(typeof url==='string'&&url.charAt(0)==='/'){url=providerOrigin+url;}
-      return _fetch.call(w,url,opts);
-    };
-    var _open=XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open=function(m,url){
-      if(typeof url==='string'&&url.charAt(0)==='/'){url=providerOrigin+url;}
-      return _open.apply(this,arguments);
-    };
+  // 2. Intercept relative fetch/XHR calls.
+  //    For vidlink.pro: route through /api/vl-proxy (server-side, no CORS issues).
+  //    For other providers: prepend the provider origin from the <base> tag.
+  var baseEl=document.querySelector('base');
+  var baseHref=(baseEl&&baseEl.href)||'';
+  var isVidlink=baseHref.indexOf('vidlink.pro')>-1;
+  var providerOrigin=baseHref.replace(/\\/$/,'');
+  function fixUrl(url){
+    if(typeof url!=='string'||url.charAt(0)!=='/') return url;
+    return isVidlink ? '/api/vl-proxy'+url : providerOrigin+url;
   }
+  var _fetch=w.fetch;
+  w.fetch=function(url,opts){ return _fetch.call(w,fixUrl(url),opts); };
+  var _open=XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open=function(m,url){ return _open.apply(this,[m,fixUrl(url)].concat([].slice.call(arguments,2))); };
 })();
 </script>`;
 
