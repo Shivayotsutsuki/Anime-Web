@@ -463,10 +463,17 @@ app.get("/api/stream", (req, res) => {
   });
 });
 
-// ─── vidlink.pro server-side CORS proxy ───────────────────────────────────────
-// Proxies all requests to https://vidlink.pro/* so their API calls (which use
-// relative paths like /api/b/tv/{id}/, /api/mercury, /fu.wasm, etc.) can be
-// made from our domain without cross-origin restrictions.
+// ─── Allowed provider origins for the generic proxy ──────────────────────────
+const ALLOWED_PROXY_ORIGINS = new Set([
+  "https://vidlink.pro",
+  "https://vidsrc.me",
+  "https://www.2embed.cc",
+  "https://vidsrc.xyz",
+  "https://vidsrc.to",
+  "https://embed.su",
+]);
+
+// ─── vidlink.pro server-side CORS proxy (legacy, keep for compatibility) ──────
 app.use("/api/vl-proxy", async (req, res) => {
   const targetUrl = "https://vidlink.pro" + req.path + (req.url.includes("?") ? "?" + req.url.split("?").slice(1).join("?") : "");
   try {
@@ -477,6 +484,46 @@ app.use("/api/vl-proxy", async (req, res) => {
         "User-Agent": EMBED_UA,
         "Referer": "https://vidlink.pro/",
         "Origin": "https://vidlink.pro",
+        "Accept": req.headers["accept"] || "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      data: req.method === "POST" ? req.body : undefined,
+      responseType: "arraybuffer",
+      maxRedirects: 5,
+      timeout: 12000,
+      validateStatus: () => true,
+    });
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    const ct = response.headers["content-type"] || "application/json";
+    res.setHeader("Content-Type", ct);
+    res.status(response.status).send(Buffer.from(response.data));
+  } catch (err) {
+    res.status(502).json({ error: "Proxy error", message: err.message });
+  }
+});
+
+// ─── Generic provider proxy ───────────────────────────────────────────────────
+// Usage: GET /api/provider-proxy?base=https://www.2embed.cc&path=/some/path&qs=foo=bar
+// The iframe SANDBOX_PATCH routes all relative fetch/XHR calls through this.
+app.use("/api/provider-proxy", async (req, res) => {
+  const base = req.query.base || "";
+  // Security: only proxy to allowed origins
+  if (!ALLOWED_PROXY_ORIGINS.has(base)) {
+    return res.status(403).json({ error: "Disallowed origin" });
+  }
+  // Reconstruct original path + query (everything after base= and path= params)
+  const reqPath = req.query.path || req.path;
+  const qs = req.query.qs ? "?" + req.query.qs : "";
+  const targetUrl = base + reqPath + qs;
+  try {
+    const response = await axios({
+      method: req.method === "POST" ? "POST" : "GET",
+      url: targetUrl,
+      headers: {
+        "User-Agent": EMBED_UA,
+        "Referer": base + "/",
+        "Origin": base,
         "Accept": req.headers["accept"] || "*/*",
         "Accept-Language": "en-US,en;q=0.9",
       },
@@ -510,8 +557,7 @@ const EMBED_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
 const SANDBOX_PATCH = `<script>
 (function(){
   var w=window;
-  // 1. Fake window.top — NOT equal to window so providers don't redirect,
-  //    but .location is readable so sandbox try/catch doesn't throw.
+  // 1. Fake window.top
   var fakeTop={
     location:{href:w.location.href,hostname:w.location.hostname,protocol:w.location.protocol,origin:w.location.origin,pathname:w.location.pathname},
     document:w.document,postMessage:w.postMessage.bind(w),
@@ -521,16 +567,26 @@ const SANDBOX_PATCH = `<script>
   function def(k,v){try{Object.defineProperty(w,k,{get:function(){return v;},configurable:true});}catch(e){}}
   def('top',fakeTop); def('parent',fakeTop); def('frameElement',null);
 
-  // 2. Intercept relative fetch/XHR calls.
-  //    For vidlink.pro: route through /api/vl-proxy (server-side, no CORS issues).
-  //    For other providers: prepend the provider origin from the <base> tag.
+  // 2. Intercept relative fetch/XHR calls and route ALL of them through the
+  //    server-side generic proxy to avoid CORS issues with every provider.
   var baseEl=document.querySelector('base');
   var baseHref=(baseEl&&baseEl.href)||'';
   var isVidlink=baseHref.indexOf('vidlink.pro')>-1;
   var providerOrigin=baseHref.replace(/\\/$/,'');
   function fixUrl(url){
-    if(typeof url!=='string'||url.charAt(0)!=='/') return url;
-    return isVidlink ? '/api/vl-proxy'+url : providerOrigin+url;
+    if(typeof url!=='string') return url;
+    if(url.charAt(0)==='/'){
+      // Relative path — route through server-side proxy
+      if(isVidlink) return '/api/vl-proxy'+url;
+      // Split path and query string
+      var qIdx=url.indexOf('?');
+      var urlPath=qIdx>=0?url.slice(0,qIdx):url;
+      var urlQs=qIdx>=0?url.slice(qIdx+1):'';
+      var proxy='/api/provider-proxy?base='+encodeURIComponent(providerOrigin)+'&path='+encodeURIComponent(urlPath);
+      if(urlQs) proxy+='&qs='+encodeURIComponent(urlQs);
+      return proxy;
+    }
+    return url;
   }
   var _fetch=w.fetch;
   w.fetch=function(url,opts){ return _fetch.call(w,fixUrl(url),opts); };
@@ -549,8 +605,14 @@ async function handleEmbed(req, res, buildUrl) {
   } catch {}
 
   if (!providerUrl) {
-    const { malId: m, ep: e } = decodeEpId(req.params.encodedId);
-    providerUrl = `https://vidsrc.xyz/embed/tv?tmdb=${m}&season=1&episode=${e}`;
+    // Fallback: try to get tmdb mapping one more time, else use 2embed with malId search
+    try {
+      const info = await jikan(`/anime/${malId}`);
+      const title = encodeURIComponent(info.data?.title_english || info.data?.title || "");
+      providerUrl = `https://www.2embed.cc/search/${title}`;
+    } catch {
+      providerUrl = `https://www.2embed.cc/embedtv/${malId}?s=1&e=${ep}`;
+    }
   }
 
   try {
